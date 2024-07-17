@@ -1,0 +1,235 @@
+import os
+import io
+import gzip
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from avro.datafile import DataFileReader, DataFileWriter
+from avro.io import DatumReader, DatumWriter
+import fastavro
+
+from astropy.time import Time
+from astropy.io import fits
+from astropy.coordinates import SkyCoord, Distance
+from astropy.table import QTable
+from astroquery.vizier import Vizier
+from astropy import units as u
+import os
+import glob
+
+def make_dataframe(packet):
+    df = pd.DataFrame(packet['candidate'], index=[0])
+    df_prv = pd.DataFrame(packet['prv_candidates'])
+    return pd.concat([df,df_prv], ignore_index=True)
+
+"""def region_query(catalog, ra, dec, center_ra, center_dec, radius):
+    c = SkyCoord(center_ra, center_dec, frame='icrs', unit='deg')
+    for i in catalog[ra]:
+        if catalog[ra][i] """
+        
+TNS1 = pd.read_csv('~/Catalogs/tns_search(1).csv')
+TNS2 = pd.read_csv('~/Catalogs/tns_search(2).csv')
+TNS3 = pd.read_csv('~/Catalogs/tns_search(3).csv')
+TNS4 = pd.read_csv('~/Catalogs/tns_search(4).csv')
+TNS5 = pd.read_csv('~/Catalogs/tns_search(5).csv')
+TNS6 = pd.read_csv('~/Catalogs/tns_search(6).csv')
+frames = [TNS1,TNS2,TNS3,TNS4,TNS5,TNS6]
+TNS = pd.concat(frames)
+TNS = QTable.from_pandas(TNS)
+i = 0
+RA = []
+DEC = []
+while i < len(TNS):
+    temp = str(TNS['RA'][i] + TNS['DEC'][i])
+    coords_temp = (SkyCoord(temp, unit=(u.hour, u.deg), 
+         frame='icrs'))
+    RA.append(coords_temp.ra.degree)
+    DEC.append(coords_temp.dec.degree)
+    i+=1
+TNS['RA'] = RA
+TNS['DEC'] = DEC
+
+ZTF = pd.read_csv('~/WINTER/ZTF_classified_transients.csv')
+ZTF = QTable.from_pandas(ZTF)
+
+Vizier.ROW_LIMIT = -1
+agn = Vizier.get_catalogs(catalog="VII/294/catalog")[0]
+len(agn)
+
+# reading avro packages
+
+avro_files = glob.glob('winter_test/avro/*')
+avro_index = []
+i = 0 
+while i <50: #change based on # of winter packets
+    avro_index.append(i)
+    i+=1
+frames=[]
+for i in avro_index:
+    fname = avro_files[i]
+    with open(fname,'rb') as f:
+        freader = fastavro.reader(f)
+    
+        for packet in freader:
+            break
+            # print(packet.keys())
+    
+    dflc = make_dataframe(packet)
+    frames.append(dflc)
+avro = pd.concat(frames)
+avro = QTable.from_pandas(avro)
+#print(avro)
+#print(avro['ra'])
+
+def plot_lightcurve(dflc, ax= None, days_ago=True):
+    
+    filter_color = {1:'green', 2:'red', 3:'pink'}
+    if days_ago:
+        now = Time.now().jd
+        t = dflc.jd - now
+        xlabel = 'Days Ago'
+    else:
+        t = dflc.jd
+        xlabel = 'Time (JD)'
+    
+    if ax == None:
+        fig = plt.figure()
+        ax = fig.add_subplot(1,1,1)
+        
+    for fid, color in filter_color.items():
+        # plot detections in this filter:
+        w = (dflc.fid == fid) & ~dflc.magpsf.isnull()
+        if np.sum(w):
+            ax.errorbar(t[w],dflc.loc[w,'magpsf'], dflc.loc[w,'sigmapsf'],fmt='.',color=color)
+        wnodet = (dflc.fid == fid) & dflc.magpsf.isnull()
+        if np.sum(wnodet):
+            ax.scatter(t[wnodet],dflc.loc[wnodet,'diffmaglim'], marker='v',color=color,alpha=0.25)
+    
+    ax.invert_yaxis()
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel('Magnitude')
+    
+def _arrayify(a):
+    """Turn seq into a 1-d numpy array."""
+    try:
+        arr = np.array(a)
+    except:
+        raise
+    return arr
+
+def xmatch(ra1,dec1,ra2,dec2,maxdist,units='deg',method='astropy',**kwargs):
+    # turn coordinate sequences into 1d arrays
+    ra1 = _arrayify(ra1)
+    dec1 = _arrayify(dec1)
+    ra2 = _arrayify(ra2)
+    dec2 = _arrayify(dec2)
+
+    if method == 'astropy':
+        unit = getattr(u,units)
+        c1 = SkyCoord(ra=ra1*unit, dec=dec1*unit)
+        c2 = SkyCoord(ra=ra2*unit, dec=dec2*unit)
+        idx, dist2d, dist3d = c1.match_to_catalog_sky(c2,**kwargs)
+
+        if maxdist is not None:
+            sel = (dist2d <= maxdist*unit)
+            idx = idx[sel]
+            dist2d = dist2d[sel]
+            
+    elif method == 'q3cpy':  # serialize Adam's code in Python first
+        raise NotImplementedError("Method '%s' not yet implemented." % method)
+            
+    else:
+        raise Exception("'%s' is not a valid method." % method)
+
+    return idx, dist2d
+
+match_RA = []
+match_dec = []
+
+idx, dist2d = xmatch(avro['ra'],avro['dec'], ZTF['RA [deg]'],ZTF['Dec[deg]'], 2)
+print(idx)
+matches_WINTER_ZTF = ZTF[idx]
+
+
+idx, dist2d = xmatch(avro['ra'],avro['dec'], agn['RAJ2000'],agn['DEJ2000'], 2)
+print(idx)
+matches_WINTER_Milliquas = agn[idx]
+plot_lightcurve(dflc)
+
+
+def plot_cutout(stamp, fig=None, subplot=None, mode = 'linear', **kwargs):
+    with gzip.open(io.BytesIO(stamp), 'rb') as f:
+        
+        if fig is None:
+            fig = plt.figure(figsize=(4,4))
+        if subplot is None:
+            # subplot = (1,1,1)
+            Rows,Cols,Position = 1,1,1
+        else:
+            Rows,Cols,Position = subplot
+            
+        ax = fig.add_subplot(Rows,Cols,Position)
+        hdul= fits.open(io.BytesIO(f.read())) 
+        im = np.arcsinh(hdul[0].data)
+        
+        if mode == 'linear':
+            vmin,vmax,std = np.nanmin(im), np.nanmax(im),np.nanstd(im)
+            ax.imshow(im,vmin=vmin-0*std, vmax=vmin+3*std)
+        
+        if mode == 'arcsinh':
+            im = np.arcsinh(im)
+            vmin,vmax,std = np.nanmin(im), np.nanmax(im),np.nanstd(im)
+            ax.imshow(im,vmin=vmin-0*std, vmax=vmin+3*std)
+
+        if mode == 'log':
+            im = np.log(im)
+            vmin,vmax,std = np.nanmin(im), np.nanmax(im),np.nanstd(im)
+            ax.imshow(im,vmin=vmin-9*std, vmax=vmin+12*std)
+    return fig
+
+def show_stamps(packet,mode='linear'):
+    #fig, axes = plt.subplots(1,3, figsize=(12,4))
+    fig = plt.figure(figsize=(16,4))
+    ax = fig.add_subplot(1,4,1)
+    plot_lightcurve(dflc,ax=ax)
+    
+    for i, cutout in enumerate(['science','template','difference']):
+        stamp = packet['cutout_{}'.format(cutout)]
+        ffig = plot_cutout(stamp, fig=fig, subplot = (1,4,i+2),mode=mode)
+        plt.title(cutout)
+        
+show_stamps(packet,mode='arcsinh')
+
+show_stamps(packet,mode='linear')
+
+#DO NOT TOUCH (otherwise the images will go away) 
+
+avro_files = glob.glob('winter_test/avro/*')
+
+for i in range(len(avro_files)):
+    fname = avro_files[i]
+    with open(fname,'rb') as f:
+        freader = fastavro.reader(f)
+    
+        for packet in freader:
+            show_stamps(packet,mode='arcsinh')
+
+
+plt.scatter(agn['RAJ2000'],agn['DEJ2000'], cmap = 'Blues', s = 0.005, c = agn['Bmag'], label = "Milliquas")
+plt.scatter(ZTF['RA [deg]'],ZTF['Dec[deg]'], color = 'lightpink', s = 3, label = "ZTF")
+#plt.scatter(TNS['RA'],TNS['DEC'], cmap = 'YlGn', s = 10, c = TNS['Discovery Mag/Flux'], label = "TNS")
+plt.scatter(avro['ra'],avro['dec'],s = 10, label = "WINTER", color = "magenta")
+#plt.scatter(avro['ra'],avro['dec'], cmap = 'spring',s = 10, c = avro['magzpsci'], label = "WINTER", color = "magenta")
+plt.scatter(matches_WINTER_ZTF['RA [deg]'],matches_WINTER_ZTF['Dec[deg]'], color = 'red', s = 15, label= 'ZTF_WINTER_match')
+plt.scatter(matches_WINTER_Milliquas['RAJ2000'],matches_WINTER_Milliquas['DEJ2000'], color = 'orange', s = 15, label= 'Milliquas_WINTER_match')
+ax = plt.gca()
+ax.set_xlim([180, 240])
+ax.set_ylim([10, 50])
+plt.xlabel("RA")
+plt.ylabel("Dec")
+plt.title("Crossmatching", style = 'italic', fontsize = 15)
+plt.legend(loc = "lower right")
+
+print(matches_WINTER_Milliquas)
+print(avro)
